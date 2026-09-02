@@ -1,0 +1,20 @@
+/* Talkman-specific Adreno 418 policy. */
+
+&msm_gpu {
+	/*
+	 * Keep the measured 300 MHz wake level and the CAF 80 ms idle
+	 * timeout.  Give the 300 MHz level one higher initial BIMC vote for
+	 * gesture-start frames.  bw_vbif can still lower it to the existing
+	 * 300 MHz bus bin.
+	 */
+	qcom,initial-pwrlevel = <4>;
+	qcom,idle-timeout = <80>;
+
+	qcom,gpu-pwrlevels {
+		qcom,gpu-pwrlevel@4 {
+			qcom,bus-freq = <4>;
+			qcom,bus-min = <2>;
+			qcom,bus-max = <4>;
+		};
+	};
+};

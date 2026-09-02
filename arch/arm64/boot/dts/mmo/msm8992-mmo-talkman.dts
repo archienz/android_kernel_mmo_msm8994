@@ -16,6 +16,7 @@
 #include "../qcom/msm8992-pinctrl.dtsi"
 #include "msm8992-chi.dtsi"
 #include "common/talkman-modem.dtsi"
+#include "common/talkman-gpu.dtsi"
 
 / {
 	model = "Microsoft Lumia 950";
