@@ -1,4 +1,23 @@
 &pm8994_gpios {
+	/*
+	 * Qi (schematic sheet 2 CHARGER_CTRL -> sheet 5 wireless receiver
+	 * N3300 -> PMI8994 DC_IN). WLC_EN on PM8994 GPIO 2, WLC_DET on
+	 * GPIO 14. The receiver's EN polarity is not on the drawing, and the
+	 * phone Qi-charges in WOA off-mode with the AP unpowered, so the
+	 * receiver default (EN floating) must already be "enabled". Leave
+	 * WLC_EN hi-Z (digital input, no pull) and read both pins through
+	 * /sys/kernel/debug/qpnp_pin/pm8994-gpio/. Do not drive WLC_EN until a
+	 * pad test shows dc/present with it floating vs. forced.
+	 */
+	gpio@c100 { /* GPIO 2  WLC_EN */
+		qcom,mode = <0>;		/* QPNP_PIN_MODE_DIG_IN (hi-Z) */
+		qcom,pull = <5>;		/* QPNP_PIN_PULL_NO */
+		qcom,vin-sel = <2>;		/* S4 1.8 V */
+		qcom,src-sel = <0>;		/* GPIO */
+		qcom,master-en = <1>;
+		status = "okay";
+	};
+
 	gpio@c200 { /* GPIO 3 */
 		qcom,mode = <0>;
 		qcom,pull = <0>;
@@ -66,7 +85,12 @@
 		status = "okay";
 	};
  
-	gpio@cd00 { /* GPIO 14 */
+	gpio@cd00 { /* GPIO 14  WLC_DET (receiver -> AP, coil present) */
+		qcom,mode = <0>;		/* QPNP_PIN_MODE_DIG_IN */
+		qcom,pull = <5>;		/* QPNP_PIN_PULL_NO */
+		qcom,vin-sel = <2>;		/* S4 1.8 V */
+		qcom,src-sel = <0>;		/* GPIO */
+		qcom,master-en = <1>;
 		status = "okay";
 	};
  
