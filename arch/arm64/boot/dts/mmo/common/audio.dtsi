@@ -74,6 +74,7 @@
 		reg = <0x40>;
 
 		ti,enable-gpio = <&pm8994_gpios 12 0>;
+		ti,pga-gain = <0x12>;			/* 11 dB; PMIC brownout above this */
 
 		pinctrl-names = "default";
 		pinctrl-0 = <&quat_mi2s_active>, <&quat_mi2s_sd2_active>;
