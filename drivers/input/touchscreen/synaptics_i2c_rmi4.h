@@ -209,6 +209,15 @@ struct synaptics_rmi4_device_info {
  * @flip_y: set to TRUE if desired to flip direction on y-axis
  * @fw_updating: firmware is updating flag
  * @sensor_sleep: flag to indicate sleep state of sensor
+ * @wakeup_gesture_supported: F12 has ctrl20, ctrl27 and data4 (firmware
+ *	wakeup gesture engine); detected from the F12 query registers
+ * @enable_wakeup_gesture: sysfs "wake_gesture" toggle (default 0)
+ * @wakeup_gesture_active: controller is in F12 wakeup-gesture-only mode
+ *	with the attention irq armed as a wakeup source
+ * @f12_ctrl20_addr: full address of F12 ctrl20 (report flags)
+ * @f12_ctrl27_addr: full address of F12 ctrl27 (wakeup gesture enable)
+ * @f12_data4_addr: full address of F12 data4 (gesture type)
+ * @f12_ctrl27_saved: ctrl27 byte 0 as found before entering gesture mode
  * @wait: wait queue for touch data polling in interrupt thread
  * @i2c_read: pointer to i2c read function
  * @i2c_write: pointer to i2c write function
@@ -258,6 +267,13 @@ struct synaptics_rmi4_data {
 	bool flip_y;
 	bool fw_updating;
 	bool suspended;
+	bool wakeup_gesture_supported;
+	bool enable_wakeup_gesture;
+	bool wakeup_gesture_active;
+	unsigned short f12_ctrl20_addr;
+	unsigned short f12_ctrl27_addr;
+	unsigned short f12_data4_addr;
+	unsigned char f12_ctrl27_saved;
 	wait_queue_head_t wait;
 	bool stay_awake;
 	bool staying_awake;
