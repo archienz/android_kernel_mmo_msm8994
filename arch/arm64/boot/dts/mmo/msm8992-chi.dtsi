@@ -29,6 +29,7 @@
 #include "common/reserved-memory.dtsi"
 #include "common/nfc.dtsi"
 #include "common/gpios.dtsi"
+#include "common/usbc.dtsi"
 #include "common/torch.dtsi"
 #include "common/sensors.dtsi"
 
@@ -103,7 +104,10 @@
 	status = "ok";
 	qcom,usbin-vadc = <&pmi8994_vadc>;
 	qcom,internal-chg-detect;
- 
+
+	/* TYPE_C + USB_VBUS into PMI8994. PD_EN is an interconnect net,
+	 * not a PD sink/source stack. Gadget is g_android, not configfs.
+	 */
 	dwc3@f9200000 {
 		maximum-speed = "high-speed";
 		no-set-vbus-power;
@@ -138,6 +142,10 @@
 		qcom,batt-id-range-pct = <15>;
 		#include "battery/microsoft_bvt5e_3000mah.dtsi"
 	};
+};
+
+&pmi8994_fg {
+	qcom,battery-data = <&talkman_batterydata>;
 };
 
 &pmi8994_charger {

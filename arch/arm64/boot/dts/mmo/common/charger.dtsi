@@ -14,12 +14,14 @@
 	status = "ok";
 	qcom,hold-soc-while-full;
 	qcom,charger = <&pmi8994_charger>;
-	qcom,fg-vbatt-low-threshold = <4200>;
+	/* WOA QcBattMngr LowBatteryVoltage is 3500 mV. */
+	qcom,fg-vbatt-low-threshold = <3500>;
 	qcom,resume-soc = <99>;
 	qcom,resume-soc-raw = <253>;
 	qcom,fg-iterm-ma = <200>;
 	qcom,fg-chg-iterm-ma = <100>;
-	qcom,fg-cutoff-voltage-mv = <2800>;
+	/* Keep the FG above the Microsoft 3200 mV empty cutoff. */
+	qcom,fg-cutoff-voltage-mv = <3200>;
 	qcom,warm-bat-decidegc = <450>;
 	qcom,hot-bat-decidegc = <550>;
 	qcom,cool-bat-decidegc = <(-50)>;
@@ -44,6 +46,7 @@
 	qcom,chg-vadc = <&pmi8994_vadc>;
 	qcom,dc-psy-type = "Wireless";
 	qcom,dc-psy-ma = <900>;
+	/* Schematic TYPE_C CC into PMI8994. PD_EN exists as a net; no PD PHY. */
 	qcom,usb-cc-controller;
 	qcom,disable-apsd;
 	qcom,disable-hvdcp;

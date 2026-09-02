@@ -1852,6 +1852,9 @@ out:
 	mutex_unlock(&chip->cyc_ctr.lock);
 }
 
+/* SRAM cycle buckets can hold leftover WP values (seen: 14921). */
+#define FG_CYCLE_COUNT_MAX		10000
+
 static int fg_get_cycle_count(struct fg_chip *chip)
 {
 	int count;
@@ -1860,11 +1863,13 @@ static int fg_get_cycle_count(struct fg_chip *chip)
 		return 0;
 
 	if ((chip->cyc_ctr.id <= 0) || (chip->cyc_ctr.id > BUCKET_COUNT))
-		return -EINVAL;
+		return 0;
 
 	mutex_lock(&chip->cyc_ctr.lock);
 	count = chip->cyc_ctr.count[chip->cyc_ctr.id - 1];
 	mutex_unlock(&chip->cyc_ctr.lock);
+	if (count < 0 || count > FG_CYCLE_COUNT_MAX)
+		return 0;
 	return count;
 }
 
@@ -2107,6 +2112,33 @@ static enum power_supply_property fg_power_props[] = {
 	POWER_SUPPLY_PROP_CYCLE_COUNT_ID,
 };
 
+/* Learned CC SRAM can decode negative (seen: -819000 uAh). Keep near design. */
+#define FG_LEARNED_CAP_MAX_PCT		150
+#define FG_LEARNED_CAP_MIN_PCT		20
+
+static bool fg_learned_cc_sane(struct fg_chip *chip)
+{
+	int64_t learned = chip->learning_data.learned_cc_uah;
+	int nom = chip->nom_cap_uah;
+
+	if (learned <= 0)
+		return false;
+	if (nom <= 0)
+		return true;
+	if (learned > (int64_t)nom * FG_LEARNED_CAP_MAX_PCT / 100)
+		return false;
+	if (learned < (int64_t)nom * FG_LEARNED_CAP_MIN_PCT / 100)
+		return false;
+	return true;
+}
+
+static int fg_charge_full_uah(struct fg_chip *chip)
+{
+	if (!fg_learned_cc_sane(chip))
+		return chip->nom_cap_uah;
+	return (int)chip->learning_data.learned_cc_uah;
+}
+
 static int fg_power_get_property(struct power_supply *psy,
 				       enum power_supply_property psp,
 				       union power_supply_propval *val)
@@ -2181,7 +2213,7 @@ static int fg_power_get_property(struct power_supply *psy,
 		val->intval = chip->nom_cap_uah;
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_FULL:
-		val->intval = chip->learning_data.learned_cc_uah;
+		val->intval = fg_charge_full_uah(chip);
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_NOW:
 		val->intval = chip->learning_data.cc_uah;
@@ -2507,7 +2539,7 @@ static int fg_cap_learning_check(struct fg_chip *chip)
 	if (chip->status == POWER_SUPPLY_STATUS_CHARGING
 				&& !chip->learning_data.active
 				&& chip->batt_aging_mode == FG_AGING_CC) {
-		if (chip->learning_data.learned_cc_uah == 0) {
+		if (chip->learning_data.learned_cc_uah <= 0) {
 			if (fg_debug_mask & FG_AGING)
 				pr_info("no capacity, aborting\n");
 			goto fail;
@@ -3248,7 +3280,9 @@ static int populate_system_data(struct fg_chip *chip)
 	}
 	chip->nom_cap_uah = bcap_uah_2b(buffer);
 	chip->actual_cap_uah = chip->nom_cap_uah;
-	if (chip->learning_data.learned_cc_uah == 0) {
+	if (!fg_learned_cc_sane(chip)) {
+		pr_info("learned_cc_uah %lld invalid, using nom_cap_uah %d\n",
+			chip->learning_data.learned_cc_uah, chip->nom_cap_uah);
 		chip->learning_data.learned_cc_uah = chip->nom_cap_uah;
 		fg_cap_learning_save_data(chip);
 	}
@@ -3656,8 +3690,8 @@ static int fg_batt_profile_init(struct fg_chip *chip)
 	int rc = 0, ret;
 	int len;
 	struct device_node *node = chip->spmi->dev.of_node;
-	struct device_node *batt_node, *profile_node;
-	const char *data, *batt_type_str;
+	struct device_node *batt_node = NULL, *profile_node;
+	const char *data, *batt_type_str, *batt_data_src = "none";
 	bool tried_again = false, vbat_in_range, profiles_same;
 	u8 reg = 0;
 
@@ -3676,7 +3710,14 @@ wait:
 		goto no_profile;
 	}
 
-	batt_node = of_find_node_by_name(node, "qcom,battery-data");
+	batt_node = of_parse_phandle(node, "qcom,battery-data", 0);
+	if (batt_node) {
+		batt_data_src = "phandle";
+	} else {
+		batt_node = of_find_node_by_name(node, "qcom,battery-data");
+		if (batt_node)
+			batt_data_src = "find_node_by_name";
+	}
 	if (!batt_node) {
 		pr_warn("No available batterydata, using OTP defaults\n");
 		rc = 0;
@@ -3685,6 +3726,18 @@ wait:
 
 	profile_node = of_batterydata_get_best_profile(batt_node, "bms",
 							fg_batt_type);
+	if (IS_ERR(profile_node)) {
+		pr_err("couldn't find profile handle rc=%ld\n",
+			PTR_ERR(profile_node));
+		rc = PTR_ERR(profile_node);
+		goto no_profile;
+	}
+	if (!profile_node && of_get_child_count(batt_node) == 1) {
+		profile_node = of_get_next_child(batt_node, NULL);
+		if (profile_node)
+			pr_warn("no ID match; using only profile %s\n",
+				profile_node->name);
+	}
 	if (!profile_node) {
 		pr_err("couldn't find profile handle\n");
 		rc = -ENODATA;
@@ -3758,6 +3811,8 @@ wait:
 		rc = 0;
 		goto no_profile;
 	}
+	pr_info("battery-data via %s, profile %s\n",
+		batt_data_src, batt_type_str);
 
 	if (!chip->batt_profile)
 		chip->batt_profile = devm_kzalloc(chip->dev,
@@ -3867,6 +3922,7 @@ done:
 	rc = populate_system_data(chip);
 	if (rc) {
 		pr_err("failed to read ocv properties=%d\n", rc);
+		of_node_put(batt_node);
 		return rc;
 	}
 	estimate_battery_age(chip, &chip->actual_cap_uah);
@@ -3874,12 +3930,16 @@ done:
 	if (chip->power_supply_registered)
 		power_supply_changed(&chip->bms_psy);
 	fg_relax(&chip->profile_wakeup_source);
-	pr_info("Battery SOC: %d\n", get_prop_capacity(chip));
+	pr_info("Battery SOC: %d, charge_full %d uah, cycle_count %d\n",
+		get_prop_capacity(chip), fg_charge_full_uah(chip),
+		fg_get_cycle_count(chip));
+	of_node_put(batt_node);
 	return rc;
 no_profile:
 	if (chip->power_supply_registered)
 		power_supply_changed(&chip->bms_psy);
 	fg_relax(&chip->profile_wakeup_source);
+	of_node_put(batt_node);
 	return rc;
 }
 

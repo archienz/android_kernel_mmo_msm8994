@@ -310,6 +310,20 @@ static int64_t of_batterydata_convert_battery_id_kohm(int batt_id_uv,
 	return resistor_value_kohm;
 }
 
+/*
+ * If ID is outside qcom,batt-id-range-pct, CAF returns NULL and FG
+ * never loads qcom,fg-profile-data (OCV path; SOC can stick at 50%).
+ * When the container has exactly one child, use that profile. Do not
+ * invent a second profile when several children exist.
+ */
+static struct device_node *of_batterydata_only_child(
+		const struct device_node *container)
+{
+	if (!container || of_get_child_count(container) != 1)
+		return NULL;
+	return of_get_next_child(container, NULL);
+}
+
 struct device_node *of_batterydata_get_best_profile(
 		const struct device_node *batterydata_container_node,
 		const char *psy_name,  const char  *batt_type)
@@ -389,7 +403,13 @@ struct device_node *of_batterydata_get_best_profile(
 
 	if (best_node == NULL) {
 		pr_err("No battery data found\n");
-		return best_node;
+		best_node = of_batterydata_only_child(
+						batterydata_container_node);
+		if (!best_node)
+			return NULL;
+		pr_warn("batt_id %d kohm unmatched; using only profile %s\n",
+			batt_id_kohm, best_node->name);
+		best_id_kohm = batt_id_kohm;
 	}
 
 	/* check that profile id is in range of the measured batt_id */
@@ -397,7 +417,13 @@ struct device_node *of_batterydata_get_best_profile(
 			((best_id_kohm * id_range_pct) / 100)) {
 		pr_err("out of range: profile id %d batt id %d pct %d",
 			best_id_kohm, batt_id_kohm, id_range_pct);
-		return NULL;
+		best_node = of_batterydata_only_child(
+						batterydata_container_node);
+		if (!best_node)
+			return NULL;
+		pr_warn("batt_id %d kohm unmatched; using only profile %s\n",
+			batt_id_kohm, best_node->name);
+		best_id_kohm = batt_id_kohm;
 	}
 
 	rc = of_property_read_string(best_node, "qcom,battery-type",
