@@ -294,6 +294,14 @@ static void fw_free_buf(struct firmware_buf *buf)
 static char fw_path_para[256];
 static const char * const fw_path[] = {
 	fw_path_para,
+	/*
+	 * Talkman: cmdline firmware_class.path=/vendor/firmware is ADSP,
+	 * Venus, and WLAN. MBA/MPSS stay on the GPT modem VFAT mounted at
+	 * /firmware (image/mba.b00, image/modem.mdt). Without this entry
+	 * request_firmware("modem.mdt") / mba.b00 never looks there, MSS
+	 * stays OFFLINE, and loc_eng / rild have no QMI (0 sats).
+	 */
+	"/firmware/image",
 	"/lib/firmware/updates/" UTS_RELEASE,
 	"/lib/firmware/updates",
 	"/lib/firmware/" UTS_RELEASE,

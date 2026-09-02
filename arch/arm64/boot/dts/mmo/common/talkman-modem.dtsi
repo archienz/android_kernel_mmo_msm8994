@@ -1,0 +1,27 @@
+/*
+ * Talkman (Lumia 950 RM-1104) modem bring-up.
+ *
+ * Stock msm8992.dtsi marks the APPS<->MODEM SMD edge "qcom,not-loadable",
+ * which makes smd_edge_to_pil_str(SMD_APPS_MODEM) return NULL. Then neither
+ * smd_pkt (qmuxd opening /dev/smdcntl*) nor smd_tty ever call
+ * subsystem_get("modem"), and the only path that boots MSS is the QMI
+ * peripheral-manager vote from rild. Until rild runs on this tree the modem
+ * stays OFFLINE and GPS gets 0 satellites.
+ *
+ * Dropping the flag restores the pre-pm-service CAF behaviour (msm8974 DT):
+ * the first smd_pkt open triggers pil_boot("modem") -> mba.b00 + modem.mdt
+ * from the firmware search path (/firmware/image, see firmware_class.c).
+ * qmuxd already retries DATA5_CNTL every second, so no init change is needed.
+ *
+ * The IPC-router SMD XPRT keeps "qcom,disable-pil-loading": it probes at
+ * kernel init, long before /firmware is mounted, and would fail the one-shot
+ * request_firmware() instead of retrying.
+ */
+
+&soc {
+	qcom,smem@6a00000 {
+		qcom,smd-modem {
+			/delete-property/ qcom,not-loadable;
+		};
+	};
+};
