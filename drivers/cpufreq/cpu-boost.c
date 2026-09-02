@@ -24,6 +24,7 @@
 #include <linux/moduleparam.h>
 #include <linux/slab.h>
 #include <linux/input.h>
+#include <linux/of.h>
 #include <linux/time.h>
 
 struct cpu_sync {
@@ -474,6 +475,7 @@ static struct input_handler cpuboost_input_handler = {
 static int cpu_boost_init(void)
 {
 	int cpu, ret;
+	bool talkman;
 	struct cpu_sync *s;
 
 	cpu_boost_wq = alloc_workqueue("cpuboost_wq", WQ_HIGHPRI, 0);
@@ -483,9 +485,28 @@ static int cpu_boost_init(void)
 	INIT_WORK(&input_boost_work, do_input_boost);
 	INIT_DELAYED_WORK(&input_boost_rem, do_input_boost_rem);
 
+	/*
+	 * Talkman (4x A53 + 2x A57, 1440x2560): bullhead's 40 ms LITTLE-only
+	 * boost left the A57s at 384 MHz for most of a fling and the app
+	 * stalled ~10 ms in dequeueBuffer at p90. 1.5 s of A57 >= 1248 MHz
+	 * plus HMP sched boost measured 0 frames over 16.7 ms. Same values
+	 * as init.talkman.power.sh / powerhint.xml; the kernel default means
+	 * the window before those run (and a missing power HAL) behaves the
+	 * same. Userspace can still lower it via the module parameters.
+	 */
+	talkman = of_machine_is_compatible("mmo,talkman");
+	if (talkman) {
+		input_boost_ms = 1500;
+		sched_boost_on_input = true;
+	}
+
 	for_each_possible_cpu(cpu) {
 		s = &per_cpu(sync_info, cpu);
 		s->cpu = cpu;
+		if (talkman) {
+			s->input_boost_freq = cpu < 4 ? 960000 : 1248000;
+			input_boost_enabled = true;
+		}
 		init_waitqueue_head(&s->sync_wq);
 		spin_lock_init(&s->lock);
 		INIT_DELAYED_WORK(&s->boost_rem, do_boost_rem);
