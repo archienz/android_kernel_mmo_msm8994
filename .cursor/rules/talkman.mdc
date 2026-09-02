@@ -1,0 +1,14 @@
+---
+description: Talkman kernel (CAF 3.10 mmo) — never-sim, remotes, camera DT
+alwaysApply: true
+---
+
+# Kernel talkman
+
+- Tree: `kernel/mmo/msm8994`, `mmo_defconfig`. Remote **archienz** only. Never `git push origin` (Android4Lumia950).
+- Author: archienz `<archienz@users.noreply.github.com>`.
+- Never `CONFIG_MSM_OIS`. Never MTP GPIO 91/92. Never CSID test-generator.
+- Rear CSI `qcom,csi-lane-assign = <0x0423>`. Mount-angle 90. CSIPHY MISC1 stock CAF.
+- `g_android`, not USB_CONFIGFS. Torch GPIO 12.
+- If `mka bootimage`: strings must include `mot_imx230` and `talkman-cci-scan`. Copy to `/run/media/deck/D Drive/phone/flash/boot.img`. Do not flash; owner flashes on black LK2ND.
+- Do not revert uncommitted qpnp-fg / of_batterydata without reading the diff.
