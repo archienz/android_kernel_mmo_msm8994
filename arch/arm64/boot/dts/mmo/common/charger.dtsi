@@ -40,7 +40,15 @@
 	qcom,fastchg-down-current-ma = <1800>; 
 	qcom,float-voltage-mv = <4350>; 
 	qcom,resume-delta-mv = <200>; 
-	qcom,charging-timeout-mins = <768>; 
+	/*
+	 * Measured 2026-09-05: on a 500 mA SDP with the screen on the pack
+	 * never reaches termination inside 768 min, the PMI8994 safety timer
+	 * fires (MISC RT_STS bit 2) and hardware latches charging off until
+	 * VBUS is physically removed. Toggling EN_BAT_CHG, USB suspend or
+	 * SFT_CFG does not clear the latch. 0 sets SFT_TIMER_DISABLE_BIT;
+	 * termination stays on iterm-ma plus the fuel gauge.
+	 */
+	qcom,charging-timeout-mins = <0>;
 	qcom,parallel-usb-min-current-ma = <700>; 
 	qcom,parallel-allowed-lowering-ma = <3000>; 
 	qcom,chg-vadc = <&pmi8994_vadc>;
