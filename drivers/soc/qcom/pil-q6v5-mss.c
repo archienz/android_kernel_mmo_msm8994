@@ -25,9 +25,12 @@
 #include <linux/regulator/consumer.h>
 #include <linux/interrupt.h>
 #include <linux/dma-mapping.h>
+#include <linux/of_address.h>
+#include <linux/sizes.h>
 #include <linux/of_gpio.h>
 #include <linux/clk/msm-clk.h>
 #include <soc/qcom/subsystem_restart.h>
+#include <soc/qcom/scm.h>
 #include <soc/qcom/ramdump.h>
 #include <soc/qcom/smem.h>
 #include <soc/qcom/smsm.h>
@@ -264,6 +267,69 @@ static int pil_mss_loadable_init(struct modem_data *drv,
 	q6_desc->proxy_timeout = PROXY_TIMEOUT_MS;
 
 	q6_desc->ops = &pil_msa_mss_ops;
+
+	/*
+	 * Optional: take the MBA image and modem metadata buffers from a
+	 * named CMA region instead of the default area. Boards whose TZ/XPU
+	 * was configured by a non-Android bootloader (Lumia 950 WOA UEFI)
+	 * only let the MSS PBL read from its own DDR window, so a default
+	 * CMA buffer at the top of RAM fails with an RMB_PBL_STATUS error
+	 * before the MBA ever runs.
+	 */
+	{
+		struct device_node *mba_np;
+		u64 base = 0, size = 0;
+		int na, ns, i;
+		const __be32 *reg;
+
+		mba_np = of_parse_phandle(pdev->dev.of_node, "qcom,mba-mem", 0);
+		if (mba_np) {
+			na = of_n_addr_cells(mba_np);
+			ns = of_n_size_cells(mba_np);
+			reg = of_get_property(mba_np, "reg", &i);
+			if (reg && i >= (na + ns) * 4) {
+				base = of_read_number(reg, na);
+				size = of_read_number(reg + na, ns);
+			}
+			if (base && size >= SZ_1M) {
+				drv->mba_region_phys = base;
+				drv->mba_region_size = size;
+				dev_info(&pdev->dev,
+					 "MBA/metadata fixed region %pa size 0x%zx\n",
+					 &drv->mba_region_phys, drv->mba_region_size);
+			} else {
+				dev_warn(&pdev->dev,
+					 "qcom,mba-mem reg unusable, using CMA\n");
+			}
+			of_node_put(mba_np);
+		}
+	}
+
+	/* talkman lab: which PIL ids does this TZ implement itself? */
+	{
+		int id;
+
+		for (id = 0; id < 12; id++) {
+			u32 request = id, ret_val = 0;
+			struct scm_desc sdesc = {0};
+			int rc;
+
+			if (!is_scm_armv8()) {
+				rc = scm_call(SCM_SVC_PIL, 7, &request,
+					      sizeof(request), &ret_val,
+					      sizeof(ret_val));
+			} else {
+				sdesc.args[0] = id;
+				sdesc.arginfo = SCM_ARGS(1);
+				rc = scm_call2(SCM_SIP_FNID(SCM_SVC_PIL, 7),
+					       &sdesc);
+				ret_val = sdesc.ret[0];
+			}
+			dev_info(&pdev->dev,
+				 "talkman lab: pas_supported(%d) rc=%d ret=%u\n",
+				 id, rc, ret_val);
+		}
+	}
 
 	q6->self_auth = of_property_read_bool(pdev->dev.of_node,
 							"qcom,pil-self-auth");

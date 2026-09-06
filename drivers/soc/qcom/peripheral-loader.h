@@ -55,6 +55,8 @@ struct pil_desc {
 	void *map_data;
 	bool shutdown_fail;
 	bool clear_fw_region;
+	/* talkman: segs copied before CMD_META_DATA_READY; skip pil_boot load */
+	bool lab_skip_seg_load;
 };
 
 /**
@@ -101,6 +103,18 @@ extern void pil_shutdown(struct pil_desc *desc);
 extern void pil_free_memory(struct pil_desc *desc);
 extern void pil_desc_release(struct pil_desc *desc);
 extern phys_addr_t pil_get_entry_addr(struct pil_desc *desc);
+extern phys_addr_t pil_get_region_end(struct pil_desc *desc);
+extern phys_addr_t pil_get_region_start(struct pil_desc *desc);
+extern int pil_copy_all_segs(struct pil_desc *desc);
+extern size_t pil_segs_filesz(struct pil_desc *desc);
+extern size_t pil_segs_span(struct pil_desc *desc, phys_addr_t *start);
+extern int pil_hive_code_window(struct pil_desc *desc, phys_addr_t *start,
+				size_t *length);
+extern int pil_mirror_elf_window(struct pil_desc *desc, phys_addr_t win,
+				 size_t winsz);
+extern int pil_force_elf_paddrs(struct pil_desc *desc);
+extern int pil_reloc_elf_paddrs_in_mdt(struct pil_desc *desc, void *elf,
+				       size_t sz);
 extern int pil_do_ramdump(struct pil_desc *desc, void *ramdump_dev);
 #else
 static inline int pil_desc_init(struct pil_desc *desc) { return 0; }
@@ -109,6 +123,51 @@ static inline void pil_shutdown(struct pil_desc *desc) { }
 static inline void pil_free_memory(struct pil_desc *desc) { }
 static inline void pil_desc_release(struct pil_desc *desc) { }
 static inline phys_addr_t pil_get_entry_addr(struct pil_desc *desc)
+{
+	return 0;
+}
+static inline phys_addr_t pil_get_region_end(struct pil_desc *desc)
+{
+	return 0;
+}
+static inline phys_addr_t pil_get_region_start(struct pil_desc *desc)
+{
+	return 0;
+}
+static inline int pil_copy_all_segs(struct pil_desc *desc)
+{
+	return 0;
+}
+static inline size_t pil_segs_filesz(struct pil_desc *desc)
+{
+	return 0;
+}
+static inline size_t pil_segs_span(struct pil_desc *desc, phys_addr_t *start)
+{
+	if (start)
+		*start = 0;
+	return 0;
+}
+static inline int pil_hive_code_window(struct pil_desc *desc, phys_addr_t *start,
+				       size_t *length)
+{
+	if (start)
+		*start = 0;
+	if (length)
+		*length = 0;
+	return 0;
+}
+static inline int pil_mirror_elf_window(struct pil_desc *desc, phys_addr_t win,
+					size_t winsz)
+{
+	return 0;
+}
+static inline int pil_force_elf_paddrs(struct pil_desc *desc)
+{
+	return 0;
+}
+static inline int pil_reloc_elf_paddrs_in_mdt(struct pil_desc *desc, void *elf,
+					      size_t sz)
 {
 	return 0;
 }

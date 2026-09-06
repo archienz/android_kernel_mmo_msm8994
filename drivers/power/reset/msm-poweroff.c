@@ -64,6 +64,15 @@ static bool scm_dload_supported;
 
 static int dload_set(const char *val, struct kernel_param *kp);
 static int download_mode = 1;
+
+/*
+ * talkman lab: msm_poweroff.panic_bootloader=1 pre-arms the IMEM restart
+ * reason with "bootloader" and forces a warm reset, so any unexpected reset
+ * (panic, watchdog bite) lands in lk2nd fastboot with DRAM contents intact.
+ * A clean reboot/poweroff clears the reason again.
+ */
+static int panic_bootloader;
+module_param(panic_bootloader, int, 0644);
 module_param_call(download_mode, dload_set, param_get_int,
 			&download_mode, 0644);
 static int panic_prep_restart(struct notifier_block *this,
@@ -248,6 +257,8 @@ static void msm_restart_prepare(const char *cmd)
 #ifdef CONFIG_MSM_PRESERVE_MEM
 	need_warm_reset = true;
 #endif
+	if (panic_bootloader)
+		need_warm_reset = true;
 
 	/* Hard reset the PMIC unless memory contents must be maintained. */
 	if (need_warm_reset) {
@@ -284,6 +295,15 @@ static void msm_restart_prepare(const char *cmd)
 					     restart_reason);
 		} else if (!strncmp(cmd, "edl", 3)) {
 			enable_emergency_dload_mode();
+		} else {
+			qpnp_pon_set_restart_reason(PON_RESTART_REASON_UNKNOWN);
+			__raw_writel(0x77665501, restart_reason);
+		}
+	} else if (panic_bootloader) {
+		if (in_panic) {
+			qpnp_pon_set_restart_reason(
+				PON_RESTART_REASON_BOOTLOADER);
+			__raw_writel(0x77665500, restart_reason);
 		} else {
 			qpnp_pon_set_restart_reason(PON_RESTART_REASON_UNKNOWN);
 			__raw_writel(0x77665501, restart_reason);
@@ -436,6 +456,11 @@ static int msm_restart_probe(struct platform_device *pdev)
 			ret = -ENOMEM;
 			goto err_restart_reason;
 		}
+
+	if (panic_bootloader) {
+		pr_info("msm-poweroff: pre-arming restart reason 'bootloader' (talkman lab)\n");
+		__raw_writel(0x77665500, restart_reason);
+	}
 	}
 
 	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);

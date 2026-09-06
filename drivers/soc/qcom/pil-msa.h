@@ -13,6 +13,7 @@
 #ifndef __MSM_PIL_MSA_H
 #define __MSM_PIL_MSA_H
 
+#include <linux/dma-mapping.h>
 #include <soc/qcom/subsystem_restart.h>
 
 #include "peripheral-loader.h"
@@ -32,7 +33,26 @@ struct modem_data {
 	struct pil_desc desc;
 	struct device mba_mem_dev;
 	struct dma_attrs attrs_dma;
+	/*
+	 * Optional fixed, kernel-removed region for the MBA image and the
+	 * modem metadata (DT qcom,mba-mem). 0 = allocate from CMA as usual.
+	 */
+	phys_addr_t mba_region_phys;
+	size_t mba_region_size;
+	void *lab_mdata_virt;
+	dma_addr_t lab_mdata_phys;
+	size_t lab_mdata_size;
+	/* After META status==3: hive CODE_START + span/filesz for AUTH retry. */
+	bool lab_meta_ok;
+	phys_addr_t lab_auth_start;
+	u32 lab_auth_span_len;
+	u32 lab_auth_filesz_len;
 };
+
+void *pil_mss_mba_alloc(struct modem_data *md, size_t size, bool mdata,
+			dma_addr_t *phys, struct dma_attrs *attrs);
+void pil_mss_mba_free(struct modem_data *md, size_t size, void *virt,
+		      dma_addr_t phys, struct dma_attrs *attrs);
 
 extern struct pil_reset_ops pil_msa_mss_ops;
 extern struct pil_reset_ops pil_msa_mss_ops_selfauth;

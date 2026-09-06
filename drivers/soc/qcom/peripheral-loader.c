@@ -182,6 +182,18 @@ phys_addr_t pil_get_entry_addr(struct pil_desc *desc)
 }
 EXPORT_SYMBOL(pil_get_entry_addr);
 
+phys_addr_t pil_get_region_end(struct pil_desc *desc)
+{
+	return desc->priv ? desc->priv->region_end : 0;
+}
+EXPORT_SYMBOL(pil_get_region_end);
+
+phys_addr_t pil_get_region_start(struct pil_desc *desc)
+{
+	return desc->priv ? desc->priv->region_start : 0;
+}
+EXPORT_SYMBOL(pil_get_region_start);
+
 static void __pil_proxy_unvote(struct pil_priv *priv)
 {
 	struct pil_desc *desc = priv->desc;
@@ -629,6 +641,337 @@ static int pil_load_seg(struct pil_desc *desc, struct pil_seg *seg)
 	return ret;
 }
 
+/*
+ * talkman: Linux CMA hive is 0x07400000 (90 MiB). ELF identity 0x07000000
+ * is the DT memory_hole / ramoops (0x070A0000). Never ioremap either the
+ * hole or the CMA RAM (m11 reserved-memory / m28 hang).
+ */
+#define TALKMAN_ELF_BASE	0x07000000UL
+#define TALKMAN_HIVE_BASE	0x07400000UL
+
+/*
+ * pil_hive_code_window LENGTH only. B3 writes RMB after META=3.
+ * 0 = CMA hive span (A4 / m33: 0x05A00000). 1 = PT_LOAD filesz sum
+ * (Windows FUN_0040c740, hash PH excluded: 0x02BD3367).
+ * Do not identity-map 0x070. Do not ioremap CMA.
+ */
+static uint lab_code_filesz;
+module_param(lab_code_filesz, uint, S_IRUGO | S_IWUSR);
+
+static bool pil_segs_look_identity(const struct pil_priv *priv)
+{
+	struct pil_seg *seg;
+
+	if (!priv->region_start || priv->region_start == priv->base_addr)
+		return false;
+	list_for_each_entry(seg, &priv->segs, list) {
+		if (!seg->relocated)
+			continue;
+		if (seg->paddr >= priv->base_addr &&
+		    seg->paddr < priv->region_start)
+			return true;
+	}
+	return false;
+}
+
+/* If lab_identity rewrote segs to ELF 0x070, put them back on the CMA hive. */
+static void pil_ensure_hive_paddrs(struct pil_desc *desc)
+{
+	struct pil_priv *priv = desc->priv;
+	struct pil_seg *seg;
+	int n = 0;
+
+	if (!priv || !priv->region_start ||
+	    priv->region_start == priv->base_addr)
+		return;
+	if (!pil_segs_look_identity(priv))
+		return;
+	list_for_each_entry(seg, &priv->segs, list) {
+		if (!seg->relocated)
+			continue;
+		seg->paddr = seg->paddr - priv->base_addr + priv->region_start;
+		n++;
+	}
+	if (n)
+		pr_err("talkman-mba restored %d segs to hive %pa (refused 0x070 identity)\n",
+		       n, &priv->region_start);
+}
+
+static size_t pil_sum_filesz(const struct pil_priv *priv)
+{
+	struct pil_seg *seg;
+	size_t total = 0;
+
+	list_for_each_entry(seg, &priv->segs, list)
+		total += seg->filesz;
+	return total;
+}
+
+/*
+ * AUTH window is the CMA hive the bytes were copied into, not ELF 0x070.
+ * talkman: CODE_START=0x07400000 CODE_LENGTH=0x05A00000 (PH3..PH23 BSS).
+ * Hash at ELF 0x0CA is non-reloc and is not part of this span.
+ */
+static void pil_compute_hive_code(struct pil_desc *desc, phys_addr_t *start,
+				  size_t *span)
+{
+	struct pil_priv *priv = desc->priv;
+	struct pil_seg *seg;
+	phys_addr_t lo = 0, hi = 0;
+	bool have = false;
+
+	pil_ensure_hive_paddrs(desc);
+	if (priv->region_start && priv->region_end > priv->region_start) {
+		lo = priv->region_start;
+		hi = priv->region_end;
+		have = true;
+	} else {
+		list_for_each_entry(seg, &priv->segs, list) {
+			phys_addr_t pa = seg->paddr;
+			phys_addr_t end = pa + (seg->sz ? seg->sz : seg->filesz);
+
+			if (!seg->relocated || end <= pa)
+				continue;
+			if (!have || pa < lo)
+				lo = pa;
+			if (!have || end > hi)
+				hi = end;
+			have = true;
+		}
+	}
+	if (start)
+		*start = have ? lo : 0;
+	if (span)
+		*span = have ? (size_t)(hi - lo) : 0;
+}
+
+static size_t pil_select_code_length(const struct pil_priv *priv, size_t span)
+{
+	return lab_code_filesz ? pil_sum_filesz(priv) : span;
+}
+
+static void pil_log_hive_code(struct pil_desc *desc)
+{
+	struct pil_priv *priv = desc->priv;
+	phys_addr_t hive, hend, code;
+	size_t span, filesz, chosen;
+
+	hive = priv->region_start;
+	hend = priv->region_end;
+	pil_compute_hive_code(desc, &code, &span);
+	filesz = pil_sum_filesz(priv);
+	chosen = pil_select_code_length(priv, span);
+	pr_err("talkman-mba hive %pa-%pa span %#zx filesz %#zx CODE_START %pa CODE_LENGTH %#zx (filesz_knob=%u)\n",
+	       &hive, &hend, span, filesz, &code, chosen, lab_code_filesz);
+}
+
+int pil_hive_code_window(struct pil_desc *desc, phys_addr_t *start,
+			 size_t *length)
+{
+	size_t span, chosen;
+
+	if (!desc || !desc->priv)
+		return -EINVAL;
+	pil_compute_hive_code(desc, start, &span);
+	chosen = pil_select_code_length(desc->priv, span);
+	if (length)
+		*length = chosen;
+	pil_log_hive_code(desc);
+	return chosen ? 0 : -EINVAL;
+}
+EXPORT_SYMBOL(pil_hive_code_window);
+
+/*
+ * Copy every loadable segment into the mmap/CMA hive without ringing
+ * MBA commands. Windows FUN_004068d0 does this before CMD_META_DATA_READY.
+ * Always dma_remap the hive — never ioremap CMA and never the 0x070 hole.
+ */
+int pil_copy_all_segs(struct pil_desc *desc)
+{
+	struct pil_seg *seg;
+	int ret, nlogged = 0;
+	const struct pil_reset_ops *ops;
+	struct pil_reset_ops tmp;
+	void *(*saved_map)(phys_addr_t, size_t, void *);
+	void (*saved_unmap)(void *, size_t, void *);
+
+	if (!desc || !desc->priv || !desc->ops)
+		return -EINVAL;
+	pil_ensure_hive_paddrs(desc);
+	ops = desc->ops;
+	tmp = *ops;
+	tmp.verify_blob = NULL;
+	desc->ops = &tmp;
+	saved_map = desc->map_fw_mem;
+	saved_unmap = desc->unmap_fw_mem;
+	desc->map_fw_mem = map_fw_mem;
+	desc->unmap_fw_mem = unmap_fw_mem;
+	list_for_each_entry(seg, &desc->priv->segs, list) {
+		if (seg->paddr >= TALKMAN_ELF_BASE &&
+		    seg->paddr < TALKMAN_HIVE_BASE) {
+			pil_err(desc,
+				"talkman lab: refuse preload into memory_hole %pa\n",
+				&seg->paddr);
+			desc->map_fw_mem = saved_map;
+			desc->unmap_fw_mem = saved_unmap;
+			desc->ops = ops;
+			return -EPERM;
+		}
+		if (nlogged < 4) {
+			pr_err("talkman-mba preload seg %u %pa filesz %#zx\n",
+			       seg->num, &seg->paddr, (size_t)seg->filesz);
+			nlogged++;
+		}
+		ret = pil_load_seg(desc, seg);
+		if (ret) {
+			desc->map_fw_mem = saved_map;
+			desc->unmap_fw_mem = saved_unmap;
+			desc->ops = ops;
+			return ret;
+		}
+	}
+	desc->map_fw_mem = saved_map;
+	desc->unmap_fw_mem = saved_unmap;
+	desc->ops = ops;
+	pil_log_hive_code(desc);
+	return 0;
+}
+EXPORT_SYMBOL(pil_copy_all_segs);
+
+/*
+ * Sum of PT_LOAD p_filesz (hash PH already excluded). Windows FUN_0040c740
+ * uses this as RMB_PMI_CODE_LENGTH (talkman modem.mdt = 0x02BD3367). A4
+ * AUTH default is the hive span; B3 lab_auth_filesz retries this sum
+ * after META status==3. Byte count, not a contiguous window from START.
+ */
+size_t pil_segs_filesz(struct pil_desc *desc)
+{
+	if (!desc || !desc->priv)
+		return 0;
+	return pil_sum_filesz(desc->priv);
+}
+EXPORT_SYMBOL(pil_segs_filesz);
+
+/*
+ * Relocated PT_LOAD window in the CMA hive (hash PH excluded).
+ * talkman: 0x07400000 .. 0x0CE00000 (90 MiB). Never ELF 0x07000000.
+ */
+size_t pil_segs_span(struct pil_desc *desc, phys_addr_t *start)
+{
+	size_t span;
+
+	if (!desc || !desc->priv)
+		return 0;
+	pil_compute_hive_code(desc, start, &span);
+	return span;
+}
+EXPORT_SYMBOL(pil_segs_span);
+
+/*
+ * Identity-mirror into ELF 0x070 is the DT memory_hole / ramoops.
+ * ioremap of the CMA hive hung m28. Keep the symbol for A3; always refuse.
+ */
+int pil_mirror_elf_window(struct pil_desc *desc, phys_addr_t win, size_t winsz)
+{
+	if (!desc)
+		return -EINVAL;
+	pil_err(desc,
+		"talkman lab: refuse ELF-window mirror %pa+%#zx (0x070 hole / no CMA ioremap)\n",
+		&win, winsz);
+	return -EPERM;
+}
+EXPORT_SYMBOL(pil_mirror_elf_window);
+
+/*
+ * Undo CMA relocation only when that is not the 0x070 memory_hole.
+ * talkman must keep seg->paddr on the 0x074 hive so AUTH names copied bytes.
+ */
+int pil_force_elf_paddrs(struct pil_desc *desc)
+{
+	struct pil_priv *priv;
+	struct pil_seg *seg;
+	int n = 0;
+
+	if (!desc || !desc->priv)
+		return -EINVAL;
+	priv = desc->priv;
+	if (!priv->region_start || priv->region_start == priv->base_addr)
+		return 0;
+	if (priv->base_addr < priv->region_start) {
+		pr_err("talkman-mba refuse identity ELF paddrs base %pa (hive %pa; memory_hole)\n",
+		       &priv->base_addr, &priv->region_start);
+		return -EPERM;
+	}
+	list_for_each_entry(seg, &priv->segs, list) {
+		if (!seg->relocated)
+			continue;
+		seg->paddr = seg->paddr - priv->region_start + priv->base_addr;
+		n++;
+	}
+	pr_err("talkman-mba identity ELF paddrs, %d segs base %pa (was hive %pa)\n",
+	       n, &priv->base_addr, &priv->region_start);
+	return 0;
+}
+EXPORT_SYMBOL(pil_force_elf_paddrs);
+
+/*
+ * Rewrite relocatable PT_LOAD p_paddr in a packed MDT so MBA header-auth
+ * maps the CMA hive (0x07400000…) instead of ELF 0x07000000. Hash PH is
+ * already patched by lab_pack. Do not combine with pil_force_elf_paddrs.
+ */
+int pil_reloc_elf_paddrs_in_mdt(struct pil_desc *desc, void *elf, size_t sz)
+{
+	struct pil_priv *priv;
+	struct elf32_hdr *eh;
+	struct elf32_phdr *ph;
+	size_t phoff, i;
+	int n = 0;
+
+	if (!desc || !desc->priv || !elf)
+		return -EINVAL;
+	priv = desc->priv;
+	if (!priv->region_start || priv->region_start == priv->base_addr)
+		return 0;
+	if (sz < sizeof(*eh))
+		return -EINVAL;
+	eh = elf;
+	if (memcmp(eh->e_ident, ELFMAG, SELFMAG) ||
+	    eh->e_ident[EI_CLASS] != ELFCLASS32)
+		return -EINVAL;
+	phoff = eh->e_phoff;
+	if (!eh->e_phnum || eh->e_phentsize != sizeof(*ph) ||
+	    phoff + (size_t)eh->e_phnum * sizeof(*ph) > sz)
+		return -EINVAL;
+	ph = (struct elf32_phdr *)((u8 *)elf + phoff);
+	for (i = 0; i < eh->e_phnum; i++, ph++) {
+		u32 old, new;
+
+		if (ph->p_type != PT_LOAD || !(ph->p_flags & BIT(27)))
+			continue;
+		if (ph->p_paddr < priv->base_addr)
+			continue;
+		old = ph->p_paddr;
+		new = old - (u32)priv->base_addr + (u32)priv->region_start;
+		ph->p_paddr = new;
+		n++;
+		if (n <= 4)
+			pr_err("talkman-mba reloc header PH%zu %08x -> %08x\n",
+			       i, old, new);
+	}
+	if (eh->e_entry >= (u32)priv->base_addr) {
+		u32 old_e = eh->e_entry;
+
+		eh->e_entry = old_e - (u32)priv->base_addr +
+			      (u32)priv->region_start;
+		pr_err("talkman-mba reloc e_entry %08x -> %08x\n",
+		       old_e, eh->e_entry);
+	}
+	pr_err("talkman-mba relocated %d header paddrs, hive %pa base %pa\n",
+	       n, &priv->region_start, &priv->base_addr);
+	return n;
+}
+EXPORT_SYMBOL(pil_reloc_elf_paddrs_in_mdt);
+
 static int pil_parse_devicetree(struct pil_desc *desc)
 {
 	int clk_ready = 0;
@@ -680,6 +1023,8 @@ int pil_boot(struct pil_desc *desc)
 
 	if (desc->shutdown_fail)
 		pil_err(desc, "Subsystem shutdown failed previously!\n");
+
+	desc->lab_skip_seg_load = false;
 
 	/* Reinitialize for new image */
 	pil_release_mmap(desc);
@@ -747,11 +1092,14 @@ int pil_boot(struct pil_desc *desc)
 		goto err_deinit_image;
 	}
 
-	list_for_each_entry(seg, &desc->priv->segs, list) {
-		ret = pil_load_seg(desc, seg);
-		if (ret)
-			goto err_deinit_image;
-	}
+	if (desc->lab_skip_seg_load)
+		pr_err("talkman-mba segs already copied before MBA headers\n");
+	else
+		list_for_each_entry(seg, &desc->priv->segs, list) {
+			ret = pil_load_seg(desc, seg);
+			if (ret)
+				goto err_deinit_image;
+		}
 
 	ret = desc->ops->auth_and_reset(desc);
 	if (ret) {
